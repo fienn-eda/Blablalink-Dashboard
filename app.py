@@ -22,17 +22,23 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_dashboard_data():
-    # 분석을 위해 넉넉히 최근 45일치 로드 (이전 업데이트 비교용)
-    threshold_ts = int((datetime.now() - timedelta(days=45)).timestamp())
-    # res = supabase.table("posts").select("*").gte("created_at", threshold_ts).execute()
-    # 시간 필터를 빼고, 혹시 모를 과부하를 막기 위해 최신 3000개만.
-    res = supabase.table("posts").select("*").order("created_at", desc=True).limit(3000).execute()
+    # [DB] 시간 필터 대신 최신글 5000개만
+    res = supabase.table("posts").select("*").order("created_at", desc=True).limit(5000).execute()
     df = pd.DataFrame(res.data)
 
     if not df.empty:
-        # 시간 변환 (초 단위 유닉스 타임스탬프 기준)
+        # [Pandas] 텍스트나 타임스탬프를 숫자로 강제 변환
+        df['created_at'] = pd.to_numeric(df['created_at'], errors='coerce')
+        df = df.dropna(subset=['created_at'])
+
+        # 분석을 위해 넉넉히 최근 45일치만 판다스 메모리 단에서 필터링
+        threshold_ts = int((datetime.now() - timedelta(days=45)).timestamp())
+        df = df[df['created_at'] >= threshold_ts]
+
+        # 시간 변환 (초 단위 타임스탬프 기준)
         df['created_at_dt'] = pd.to_datetime(df['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
         df['date'] = df['created_at_dt'].dt.date
+
     return df
 
 # ==========================================
