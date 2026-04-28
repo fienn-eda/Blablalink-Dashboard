@@ -13,9 +13,8 @@ import plotly.graph_objects as go
 # ==========================================
 st.set_page_config(page_title="Blablalink 인사이트 대시보드", page_icon="💬", layout="wide")
 
-# 💡 실무 팁: 원래는 st.secrets에 키를 숨겨야 하지만, 로컬 테스트용이므로 변수로 둡니다.
-SUPABASE_URL = "https://aormfyahsnifqiwocyvl.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvcm1meWFoc25pZnFpd29jeXZsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTk5MzYzMSwiZXhwIjoyMDkxNTY5NjMxfQ.RxtlAmA9sOaOwBqKSiCzhp-20JXwQMxekz6DrcmpJgI" 
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==========================================
@@ -253,17 +252,28 @@ with tab_outpost:
                         final_context += build_context_text(risk_top, df_comments, "리스크 감지 게시글")
                         final_context += build_context_text(guide_top, df_comments, "유저 공략 트렌드")
 
+                        # 니케 백과사전 읽어오기
+                        nikke_base = ""
+                        try:
+                            with open("nikke_base.md", "r", encoding="utf-8") as f:
+                                nikke_base = f.read()
+                        except FileNotFoundError:
+                            nikke_base = "사전 파일이 없습니다."
+
                         prompt = f"""
                         너는 '승리의 여신: 니케'의 시니어 전략 분석가야. 
-                        다음 데이터를 종합하여 경영진용 [전략 분석 리포트]를 작성해.
+                        다음은 네가 분석할 때 반드시 참고해야 할 [인게임 배경지식]이야.
+                        {nikke_base}
 
+                        다음 데이터를 종합하여 경영진용 [전략 분석 리포트]를 작성해.
                         [분석 데이터]
                         {final_context}
 
                         [보고서 필수 포함 항목]
                         - **핵심 여론 요약**: 현재 유저들이 가장 열광하거나 분노하는 지점이 무엇인지 베스트 댓글을 근거로 3줄 이내 요약.
                         - **리스크 심층 분석**: 리스크 게시글들이 실제 시스템적 결함인지, 단순 감정적 불만인지 구분하여 분석.
-                        - **유저 공략 트렌드**: 유저들이 현재 어떤 콘텐츠(공략)에 집중하고 있는지 파악하여 다음 패치 방향성 제시.
+                        - **유저 공략 트렌드**: 유저들이 현재 어떤 콘텐츠(공략)에 집중하고 있는지 파악.
+                        - **미래 전략**: 핵심 여론, 리스크 분석, 공략 트렌드 분석을 기반으로 향후 업데이트 방향성 및 운영 전략을 제시.
                         """
 
                         client = genai.Client(api_key=gemini_api_key)

@@ -182,3 +182,10 @@ cython_debug/
 
 # Streamlit secrets
 .streamlit/secrets.toml
+
+# Data & Images
+nikke_arts/
+*.csv
+
+# Environments
+.env
