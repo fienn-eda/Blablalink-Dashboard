@@ -378,127 +378,120 @@ with tab_guide:
 
 # --- 🎨 TAB 3: 니케 아트 (미디어 및 반응 분석) ---
 with tab_art:
-    # 1. CSV 장부 로드 (이미지 메타데이터)
-    import os
-    SAVE_DIR = "./nikke_arts"
-    CSV_PATH = os.path.join(SAVE_DIR, "metadata.csv")
+    # 1. Supabase 데이터 로드 (로컬 CSV 탈출)
+    try:
+        # DB에서 전체 데이터를 가져옵니다. 
+        # (추후 데이터가 수만 건이 넘어가면 .select() 안에 필요한 컬럼만 명시하거나 필터링을 추가하여 최적화하세요.)
+        response = supabase.table("nikke_arts").select("*").execute()
 
-    if os.path.exists(CSV_PATH):
-        df_art = pd.read_csv(CSV_PATH)
+        if response.data:
+            df_art = pd.DataFrame(response.data)
 
-        # 결측치 및 문자열 찌꺼기를 실수(NaN)로 강제 변환 후 즉시 제거
-        df_art['created_at'] = pd.to_numeric(df_art['created_at'], errors='coerce')
-        df_art = df_art.dropna(subset=['created_at'])
+            # [데이터 정제] created_at이 numeric(float)으로 들어오므로 변환
+            df_art['created_at'] = pd.to_numeric(df_art['created_at'], errors='coerce')
+            df_art = df_art.dropna(subset=['created_at'])
 
-        df_art = df_art[(df_art['created_at'] > 1000000000) & (df_art['created_at'] < 2000000000)]
+            # 유효한 타임스탬프 범위 필터링
+            df_art = df_art[(df_art['created_at'] > 1000000000) & (df_art['created_at'] < 2000000000)]
 
-        # 불순물이 100% 제거된 안전한 상태에서 시간 변환 수행
-        df_art['created_at_dt'] = pd.to_datetime(df_art['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
+            # 시간대 변환 (UTC -> Asia/Seoul)
+            df_art['created_at_dt'] = pd.to_datetime(df_art['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
+            df_art['date'] = df_art['created_at_dt'].dt.date
 
-        # 날짜 컬럼 생성
-        df_art['date'] = df_art['created_at_dt'].dt.date
+            now_dt = datetime.now(df_art['created_at_dt'].dt.tz)
 
-        now_dt = datetime.now(df_art['created_at_dt'].dt.tz)
+            # 2. DoD / UoU 동적 필터링 로직 (기존 유지)
+            if "UoU" in analysis_mode:
+                current_art = df_art[df_art['created_at_dt'] >= curr_update_dt].copy()
+                compare_art = df_art[(df_art['created_at_dt'] >= prev_update_dt) & (df_art['created_at_dt'] < curr_update_dt)]
+                days_curr = max((now_dt - curr_update_dt).days, 1)
+                days_prev = max((curr_update_dt - prev_update_dt).days, 1)
+                art_traf_curr = len(current_art) / days_curr
+                art_traf_prev = len(compare_art) / days_prev
+                art_label, art_delta_label = f"이번 업데이트", "이전 패치 일평균 대비"
+                traf_label, traf_unit = "일평균 신규 게시글", "건/일"
+                art_group = 'date'
+            else:
+                current_art = df_art[df_art['created_at_dt'] >= (now_dt - timedelta(hours=24))].copy()
+                compare_art = df_art[(df_art['created_at_dt'] >= (now_dt - timedelta(hours=48))) & (df_art['created_at_dt'] < (now_dt - timedelta(hours=24)))]
+                art_traf_curr = len(current_art)
+                art_traf_prev = len(compare_art)
+                art_label, art_delta_label = "최근 24시간", "전일 24h 대비"
+                traf_label, traf_unit = "최근 24시간 신규 게시글", "건"
+                current_art['hour'] = current_art['created_at_dt'].dt.strftime('%m-%d %H:00')
+                art_group = 'hour'
 
-        # 2. DoD / UoU 동적 필터링 및 '기간 정규화(일평균)' 로직 추가
-        if "UoU" in analysis_mode:
-            current_art = df_art[df_art['created_at_dt'] >= curr_update_dt].copy()
-            compare_art = df_art[(df_art['created_at_dt'] >= prev_update_dt) & (df_art['created_at_dt'] < curr_update_dt)]
+            def get_art_eng_rate(df):
+                if df.empty or df['browse_count'].sum() == 0: return 0.0
+                return (df['upvote_count'].sum() + df['comment_count'].sum()) / df['browse_count'].sum() * 100
 
-            # 기간 계산 (0으로 나누는 것을 방지하기 위해 최소 1일로 설정)
-            days_curr = max((now_dt - curr_update_dt).days, 1)
-            days_prev = max((curr_update_dt - prev_update_dt).days, 1)
+            # 3. 🏗️ 상단 레이아웃 (Metric)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("💡 Art Engagement Rate")
+                art_eng_curr = get_art_eng_rate(current_art)
+                art_eng_prev = get_art_eng_rate(compare_art)
+                st.metric(label=f"참여도 ({art_label})", 
+                          value=f"{art_eng_curr:.2f}%", 
+                          delta=f"{art_eng_curr - art_eng_prev:+.2f}%p ({art_delta_label})")
+                if not current_art.empty:
+                    st.line_chart(current_art.groupby(art_group).apply(get_art_eng_rate, include_groups=False), height=200)
 
-            # 총합 대신 '일평균(Daily Average)' 계산
-            art_traf_curr = len(current_art) / days_curr
-            art_traf_prev = len(compare_art) / days_prev
+            with col2:
+                st.subheader("🖼️ Art Traffic Shift")
+                st.metric(label=traf_label, 
+                          value=f"{art_traf_curr:.1f} {traf_unit}", 
+                          delta=f"{art_traf_curr - art_traf_prev:+.1f} {traf_unit} ({art_delta_label})")
+                if not current_art.empty:
+                    st.line_chart(current_art.groupby(art_group).size(), height=200)
 
-            art_label, art_delta_label = f"이번 업데이트", "이전 패치 일평균 대비"
-            traf_label, traf_unit = "일평균 신규 게시글", "건/일"
-            art_group = 'date'
+            st.divider()
 
+            # 4. 🗣️ 중간 레이아웃 (태그 및 바이럴)
+            col3, col4 = st.columns(2)
+            with col3:
+                st.subheader("🏷️ 인기 태그 TOP 5")
+                if not current_art.empty:
+                    all_tags = current_art['tags'].replace('태그 없음', None).dropna().str.split(',').explode().str.strip()
+                    if not all_tags.empty:
+                        top_tags = all_tags.value_counts().head(5).reset_index()
+                        top_tags.columns = ['태그', '빈도수']
+                        fig_tags = px.bar(top_tags, x='태그', y='빈도수', text='빈도수', color='빈도수', color_continuous_scale='Purples')
+                        fig_tags.update_layout(xaxis={'categoryorder':'total descending'}, showlegend=False, height=350, margin=dict(l=0, r=0, t=30, b=0))
+                        st.plotly_chart(fig_tags, width='stretch')
+
+            with col4:
+                st.subheader("🔄 바이럴 트렌드 (공유 횟수)")
+                if not current_art.empty:
+                    st.line_chart(current_art.groupby(art_group)['forward_count'].sum(), height=350)
+
+            st.divider()
+
+            # 5. 👑 하단 레이아웃: 인기 창작물 (이미지 렌더링 추가)
+            st.subheader("🎨 이번 업데이트 인기 창작물 TOP 3")
+            if not current_art.empty:
+                unique_posts = current_art.drop_duplicates(subset=['post_uuid']).copy()
+                unique_posts['popularity_score'] = unique_posts['browse_count'] + (unique_posts['upvote_count'] * 10)
+                top3_art = unique_posts.nlargest(3, 'popularity_score')
+
+                # 가로로 3개의 컬럼을 만들어 이미지를 배치
+                art_cols = st.columns(3)
+                for i, (idx, row) in enumerate(top3_art.iterrows()):
+                    with art_cols[i]:
+                        # 💡 다중 이미지 처리: 파이프(|)로 쪼개서 첫 번째 이미지만 썸네일로 활용
+                        img_urls = str(row['image_url']).split('|')
+                        display_img = img_urls[0] if img_urls[0] != "NO_IMAGE" else None
+
+                        if display_img:
+                            st.image(display_img, width='stretch')
+                        else:
+                            st.info("이미지를 불러올 수 없는 게시글입니다.")
+
+                        post_url = f"https://www.blablalink.com/post/detail?post_uuid={row['post_uuid']}"
+                        st.markdown(f"**[{row['title']}]({post_url})**")
+                        st.caption(f"👁️ {row['browse_count']:,} | 👍 {row['upvote_count']:,} | 🔄 {row['forward_count']:,}")
         else:
-            current_art = df_art[df_art['created_at_dt'] >= (now_dt - timedelta(hours=24))]
-            compare_art = df_art[(df_art['created_at_dt'] >= (now_dt - timedelta(hours=48))) & (df_art['created_at_dt'] < (now_dt - timedelta(hours=24)))]
+            st.info("Supabase DB에 적재된 아트 데이터가 없습니다.")
 
-            # DoD 모드는 이미 동일한 '24시간' 비교이므로 총합을 그대로 사용
-            art_traf_curr = len(current_art)
-            art_traf_prev = len(compare_art)
-
-            art_label, art_delta_label = "최근 24시간", "전일 24h 대비"
-            traf_label, traf_unit = "최근 24시간 신규 게시글", "건"
-
-            current_art['hour'] = current_art['created_at_dt'].dt.strftime('%m-%d %H:00')
-            art_group = 'hour'
-
-        def get_art_eng_rate(df):
-            if df.empty or df['browse_count'].sum() == 0: return 0.0
-            return (df['upvote_count'].sum() + df['comment_count'].sum()) / df['browse_count'].sum() * 100
-
-        # 3. 🏗️ 상단 레이아웃 (Engagement & Traffic)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("💡 Art Engagement Rate", help="참여도 = (좋아요 수 + 댓글 수) / 조회수")
-            art_eng_curr = get_art_eng_rate(current_art)
-            art_eng_prev = get_art_eng_rate(compare_art)
-            st.metric(label=f"참여도 ({art_label})", 
-                      value=f"{art_eng_curr:.2f}%", 
-                      delta=f"{art_eng_curr - art_eng_prev:+.2f}%p ({art_delta_label})")
-            if not current_art.empty:
-                st.line_chart(current_art.groupby(art_group).apply(get_art_eng_rate, include_groups=False), height=200)
-
-        with col2:
-            st.subheader("🖼️ Art Traffic Shift")
-            # 💡 수정 완료: 동적으로 계산된 일평균(또는 24시간 총합) 값을 소수점 1자리까지 표시
-            st.metric(label=traf_label, 
-                      value=f"{art_traf_curr:.1f} {traf_unit}", 
-                      delta=f"{art_traf_curr - art_traf_prev:+.1f} {traf_unit} ({art_delta_label})")
-            if not current_art.empty:
-                st.line_chart(current_art.groupby(art_group).size(), height=200)
-
-        st.divider()
-
-        # 4. 🗣️ 중간 레이아웃 (Top 5 태그 및 전파력 분석)
-        col3, col4 = st.columns(2)
-        with col3:
-            st.subheader("🏷️ 인기 태그 TOP 5")
-            if not current_art.empty:
-                all_tags = current_art['tags'].dropna().str.split(',').explode().str.strip()
-                top_tags = all_tags.value_counts().head(5).reset_index()
-                top_tags.columns = ['태그', '빈도수'] 
-
-                fig_tags = px.bar(top_tags, x='태그', y='빈도수', text='빈도수', 
-                                  color='빈도수', color_continuous_scale='Purples')
-                # 💡 수정 1: Plotly 차트의 height를 250 -> 350으로 키워줍니다.
-                fig_tags.update_layout(xaxis={'categoryorder':'total descending'}, 
-                                       showlegend=False, height=350, margin=dict(l=0, r=0, t=30, b=0))
-                st.plotly_chart(fig_tags, width='stretch')
-
-        with col4:
-            st.subheader("🔄 바이럴 트렌드 (공유 횟수)")
-            if not current_art.empty:
-                # 💡 수정 2: Streamlit 기본 차트에도 height=350을 명시적으로 추가하여 양쪽 균형을 맞춥니다.
-                st.line_chart(current_art.groupby(art_group)['forward_count'].sum(), height=350)
-
-        st.divider()
-
-        # 5. 👑 하단 레이아웃: 인기 창작물 (조회수/추천수 기반)
-        st.subheader("🎨 이번 업데이트 인기 창작물 TOP 3")
-
-        if not current_art.empty:
-            # post_uuid 기준으로 중복 제거 (한 게시글은 한 번만 순위에 표시)
-            unique_posts = current_art.drop_duplicates(subset=['post_uuid']).copy()
-
-            # 조회수와 추천수를 합산한 가중치 점수로 정렬
-            unique_posts['popularity_score'] = unique_posts['browse_count'] + (unique_posts['upvote_count'] * 10)
-            top3_art = unique_posts.nlargest(3, 'popularity_score')
-
-            for idx, row in top3_art.iterrows():
-                # 기존 하이퍼링크 생성 로직 유지
-                post_url = f"https://www.blablalink.com/post/detail?post_uuid={row['post_uuid']}"
-                st.markdown(f"""
-                #### 🔗 [{row['title']}]({post_url})
-                - **조회수:** {row['browse_count']:,} | **추천수:** {row['upvote_count']:,} | **공유:** {row['forward_count']:,}
-                """)
-    else:
-        st.warning("아트 메타데이터(CSV)가 아직 생성되지 않았습니다. 크롤러를 실행해 주세요.")
+    except Exception as e:
+        st.error(f"데이터베이스 연결 오류: {e}")
