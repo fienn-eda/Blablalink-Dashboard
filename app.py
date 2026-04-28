@@ -24,7 +24,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 def load_dashboard_data():
     # 분석을 위해 넉넉히 최근 45일치 로드 (이전 업데이트 비교용)
     threshold_ts = int((datetime.now() - timedelta(days=45)).timestamp())
-    res = supabase.table("posts").select("*").gte("created_at", threshold_ts).execute()
+    # res = supabase.table("posts").select("*").gte("created_at", threshold_ts).execute()
+    # 시간 필터를 빼고, 혹시 모를 과부하를 막기 위해 최신 3000개만.
+    res = supabase.table("posts").select("*").order("created_at", desc=True).limit(3000).execute()
     df = pd.DataFrame(res.data)
 
     if not df.empty:
