@@ -17,10 +17,10 @@ jobs:
     - name: 저장소 코드 불러오기
       uses: actions/checkout@v4
 
-    - name: 파이썬 3.10 환경 세팅
+    - name: 파이썬 3.11 환경 세팅
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.11'
 
     - name: 필수 라이브러리 설치 (requirements.txt 기반)
       run: |
