@@ -12,6 +12,9 @@ on:
 jobs:
   run-crawler:
     runs-on: ubuntu-latest # 깃허브가 제공하는 리눅스 서버 사용
+    
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
     - name: 저장소 코드 불러오기
