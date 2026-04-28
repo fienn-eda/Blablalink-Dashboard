@@ -46,7 +46,7 @@ def load_dashboard_data():
 # ==========================================
 df_all = load_dashboard_data()
 
-# 💡 데이터가 없거나 권한(RLS) 문제로 막힌 경우, 여기서 대시보드 렌더링을 완전히 멈춥니다.
+# 데이터가 없거나 권한(RLS) 문제로 막힌 경우, 여기서 대시보드 렌더링을 완전히 멈춥니다.
 if df_all.empty or 'plate_name' not in df_all.columns:
     st.error("🚨 데이터베이스에서 데이터를 불러오지 못했습니다.")
     st.info("💡 해결 방법: Supabase 대시보드 -> Authentication -> Policies에서 'posts' 테이블의 RLS를 해제(Disable)해 주세요.")
@@ -88,9 +88,8 @@ def build_context_text(df, df_comments, category_name):
 
 # 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
 def get_update_points(df):
-    # 최상단에서 이미 깡통 방어를 했으므로, 여기서는 핵심 로직만 깔끔하게 남깁니다.
     df_official = df[df['plate_name'] == '공식 뉴스']
-    updates = df_official[df_official['title'].str.contains('업데이트', na=False)]
+    updates = df_official[df_official['title'].str.contains('업데이트 점검 종료 안내', na=False)]
 
     if len(updates) >= 2:
         sorted_updates = updates.sort_values('created_at', ascending=False)
