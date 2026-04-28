@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # ==========================================
-# ⚙️ 1. 기본 설정 및 DB 연결
+#  1. 기본 설정 및 DB 연결
 # ==========================================
 st.set_page_config(page_title="Blablalink 인사이트 대시보드", page_icon="💬", layout="wide")
 
@@ -18,7 +18,7 @@ SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==========================================
-# 💾 2. 함수 모은거
+#  2. 함수 모은거
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_dashboard_data():
@@ -33,9 +33,21 @@ def load_dashboard_data():
         df['date'] = df['created_at_dt'].dt.date
     return df
 
+# ==========================================
+# 2-1. 데이터 로드 및 마스터 방어막 (Early Exit)
+# ==========================================
 df_all = load_dashboard_data()
 
-# [04-24추가]댓글의 노이즈를 필터링하는 도우미 함수
+# 💡 데이터가 없거나 권한(RLS) 문제로 막힌 경우, 여기서 대시보드 렌더링을 완전히 멈춥니다.
+if df_all.empty or 'plate_name' not in df_all.columns:
+    st.error("🚨 데이터베이스에서 데이터를 불러오지 못했습니다.")
+    st.info("💡 해결 방법: Supabase 대시보드 -> Authentication -> Policies에서 'posts' 테이블의 RLS를 해제(Disable)해 주세요.")
+    st.stop() # 🛑 아래에 있는 함수나 UI 코드는 아예 실행되지 않음!
+
+# ==========================================
+# 2-2. 유틸리티 함수 모음
+# ==========================================
+# 댓글의 노이즈를 필터링하는 도우미 함수
 def is_valid_comment(raw_text):
     if not isinstance(raw_text, str): return False
 
@@ -51,26 +63,24 @@ def is_valid_comment(raw_text):
 
     return True
 
-# AI 프롬프트용 텍스트 조립기
+# AI 프롬프트용 텍스트 조립기 (List Join 방식)
 def build_context_text(df, df_comments, category_name):
-    text = f"\n--- 📌 {category_name} ---\n"
+    # += 대신 리스트에 append 후 join 하는 것이 파이썬의 정석이자 훨씬 빠릅니다.
+    text_chunks = [f"\n--- 📌 {category_name} ---\n"]
+
     for _, row in df.iterrows():
-        text += f"제목: {row['title']}\n"
+        text_chunks.append(f"제목: {row['title']}\n")
+
         if not df_comments.empty and row['post_uuid'] in df_comments['post_uuid'].values:
             post_comments = df_comments[df_comments['post_uuid'] == row['post_uuid']]
             for _, crow in post_comments.iterrows():
-                text += f"  └ 베스트댓글({crow['upvote_count']}추천): {crow['content'][:100]}\n"
-    return text
+                text_chunks.append(f"  └ 베스트댓글({crow['upvote_count']}추천): {crow['content'][:100]}\n")
 
-# 📅 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
+    return "".join(text_chunks)
+
+# 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
 def get_update_points(df):
-    # [방어 로직] 데이터프레임이 아예 비어있거나 'plate_name' 컬럼이 없는 경우의 안전장치
-    if df.empty or 'plate_name' not in df.columns:
-        # 데이터가 없을 때는 임시로 현재 시간과 7일 전 시간을 반환하여 대시보드가 터지지 않게 막습니다.
-        now_ts = int(datetime.now().timestamp())
-        prev_ts = now_ts - (86400 * 7) # 7일(초 단위) 전
-        return now_ts, prev_ts
-
+    # 최상단에서 이미 깡통 방어를 했으므로, 여기서는 핵심 로직만 깔끔하게 남깁니다.
     df_official = df[df['plate_name'] == '공식 뉴스']
     updates = df_official[df_official['title'].str.contains('업데이트', na=False)]
 
@@ -78,13 +88,18 @@ def get_update_points(df):
         sorted_updates = updates.sort_values('created_at', ascending=False)
         return sorted_updates.iloc[0]['created_at'], sorted_updates.iloc[1]['created_at']
 
-    # 업데이트 글이 부족할 때의 기존 기본값 로직
-    return int(datetime.now().timestamp()), int((datetime.now() - timedelta(days=7)).timestamp())
+    # 공식 뉴스 업데이트 글이 부족할 때의 백업 기본값
+    now_ts = int(datetime.now().timestamp())
+    prev_ts = now_ts - (86400 * 7) # 7일(초 단위) 전
+    return now_ts, prev_ts
 
+# ==========================================
+# 2-3. 변수 할당 및 후속 처리
+# ==========================================
 curr_update_ts, prev_update_ts = get_update_points(df_all)
 
 # ==========================================
-# 🖥️ 3. 메인 UI 구성 & 사이드바
+# 3. 메인 UI 구성 & 사이드바
 # ==========================================
 st.title("Blablalink 인사이트 대시보드")
 
@@ -101,10 +116,10 @@ df_guide = df_all[(df_all['plate_name'] == '유저 공략')].copy()
 
 tab_outpost, tab_guide, tab_art = st.tabs(["🗣️ 전초기지 (여론)", "📚 유저 공략 (트렌드)", "🎨 니케 아트 (미디어)"])
 
-# --- 🗣️ TAB 1: 전초기지 (다이내믹 필터링 적용) ---
+# --- TAB 1: 전초기지 (다이내믹 필터링 적용) ---
 with tab_outpost:
 
-    # 💡 [핵심] 1. 모드에 따른 동적 시간 필터링 계산
+    # 모드에 따른 동적 시간 필터링 계산
     now_dt = datetime.now(df_out_pure['created_at_dt'].dt.tz)
 
     # 업데이트 기준일 (UTC -> KST 변환 보장)
@@ -132,7 +147,7 @@ with tab_outpost:
 
     st.markdown(f"**기준:** {time_label} (분석 대상: {len(current_df):,}건)")
 
-    # 2. 📊 KPI 계산 도우미 함수
+    # 2. KPI 계산 도우미 함수
     pos_words = ['갓겜', '혜자', '만족', '재밌', '좋아', '좋다', '대박', '최고', '기대', '기쁘다', '기뻤습니다', '기뻐요', '기쁩니다', '행복', '행복하다', '행복해']
     neg_words = ['망겜', '창렬', '불만', '싫어', '싫다', '노답', '삭제', '접음', '최악', '나쁘다', '나빴습니다', '나빠요', '나쁩니다', '슬픔', '슬프다', '슬퍼'
                 ,'문제']
@@ -159,7 +174,7 @@ with tab_outpost:
     comp_risk_cnt = compare_df['is_risk'].sum()
     risk_delta = int(curr_risk_cnt - comp_risk_cnt)
 
-    # 3. 🏗️ 레이아웃 배치
+    # 3. 레이아웃 배치
     top_col1, top_col2 = st.columns(2)
 
     with top_col1:
@@ -204,8 +219,8 @@ with tab_outpost:
 
     st.divider()
 
-    # 4. 🤖 하단 AI 전략 분석 센터
-    st.header("🧠 통합 전략 분석 리포트")
+    # 4. 하단 AI 전략 분석 센터
+    st.header("통합 전략 분석 리포트")
 
     # [시각화 추가] 긍정 지수 변화 (Gauge Chart)
     col_sent1, col_sent2 = st.columns([1, 2])
@@ -229,8 +244,8 @@ with tab_outpost:
         st.plotly_chart(fig_gauge, width='stretch')
 
     with col_sent2:
-        st.markdown("### 🕵️‍♂️ 실시간 이슈 통합 리포트")
-        if st.button("🔥 통합 민심 전략 리포트 생성", type="primary"):
+        st.markdown("### 실시간 이슈 통합 리포트")
+        if st.button("통합 민심 전략 리포트 생성", type="primary"):
             if not gemini_api_key:
                 st.error("API Key를 입력하세요.")
             else:
@@ -247,7 +262,7 @@ with tab_outpost:
 
                         df_comments = pd.DataFrame()
                         if target_uuids:
-                            # 💡 [성능 최적화] in_ 연산자를 사용하여 단 1번의 쿼리로 관련 댓글 전체 수집
+                            # in_ 연산자를 사용하여 1번의 쿼리로 관련 댓글 전체 수집
                             res_comments = supabase.table("comments").select("post_uuid, content, upvote_count").in_("post_uuid", target_uuids).execute()
                             if res_comments.data:
                                 df_comments = pd.DataFrame(res_comments.data)
@@ -293,7 +308,7 @@ with tab_outpost:
                     except Exception as e:
                         st.error(f"리포트 생성 실패: {e}")
 
-# --- 📚 TAB 2: 유저 공략 ---
+# --- TAB 2: 유저 공략 ---
 with tab_guide:
 
     # 1. 🕒 시간 필터링 데이터 준비
@@ -309,13 +324,13 @@ with tab_guide:
     dod_curr = df_guide[df_guide['created_at_dt'] >= (now_dt - timedelta(hours=24))].copy()
     dod_prev = df_guide[(df_guide['created_at_dt'] >= (now_dt - timedelta(hours=48))) & (df_guide['created_at_dt'] < (now_dt - timedelta(hours=24)))]
 
-    # 2. 📊 지표 계산 함수
+    # 2. 지표 계산 함수
     def get_eng_rate(df):
         if df.empty or df['browse_count'].sum() == 0: return 0.0
         # 참여도 = (추천수 + 댓글수) / 조회수 * 100
         return (df['upvote_count'].sum() + df['comment_count'].sum()) / df['browse_count'].sum() * 100
 
-    # 3. 🏗️ 상단 레이아웃 (1. 참여도 / 2. 트래픽)
+    # 3. 상단 레이아웃 (1. 참여도 / 2. 트래픽)
     col1, col2 = st.columns(2)
 
     with col1:
@@ -347,13 +362,13 @@ with tab_guide:
 
     st.divider()
 
-    # 4. 🗣️ 중간 레이아웃: Share of Voice (키워드 추출)
+    # 4. 중간 레이아웃: Share of Voice (키워드 추출)
     st.subheader("📊 Share of Voice (Top 5 키워드)")
     st.caption("최근 업데이트 이후 유저 공략 탭에서 가장 많이 언급된 단어입니다.")
 
     if not uou_curr.empty:
-        # 💡 시니어의 팁: SoV 추출 시 LLM을 쓰면 너무 느리므로, 명사 위주의 정규식 카운팅으로 대체하여 속도를 확보합니다.
-        stop_words = ['공략', '니케', '뉴비', '질문', '이거', '어떻게', '진짜', '너무'] # 불용어 사전
+        # 명사 위주의 정규식 카운팅
+        stop_words = ['공략', '니케', '뉴비', '질문', '이거', '어떻게', '진짜', '너무']
         all_text = " ".join(uou_curr['title'].astype(str).tolist())
         words = re.findall(r'[가-힣A-Za-z]{2,}', all_text) # 2글자 이상 한글/영문 추출
         filtered_words = [w for w in words if w not in stop_words]
@@ -361,16 +376,16 @@ with tab_guide:
         top_5_words = Counter(filtered_words).most_common(5)
         df_sov = pd.DataFrame(top_5_words, columns=['키워드', '빈도수'])
 
-        # 💡 Plotly를 활용한 내림차순 & 고급 디자인 적용
+        # Plotly를 활용한 내림차순 & 디자인
         fig_sov = px.bar(df_sov, x='키워드', y='빈도수', text='빈도수', 
-                         color='빈도수', color_continuous_scale='Blues') # 파란색 그라데이션
+                         color='빈도수', color_continuous_scale='Blues')
         fig_sov.update_layout(xaxis={'categoryorder':'total descending'}, # 내림차순 강제 정렬
                               showlegend=False, height=250, margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_sov, width='stretch')
 
     st.divider()
 
-    # 5. 👑 하단 레이아웃: TOP 3 인기 공략 (클릭 가능한 링크 포함)
+    # 5. 하단 레이아웃: TOP 3 인기 공략 (클릭 가능한 링크 포함)
     st.subheader(f"👑 업데이트 이후 TOP 3 인기 공략")
     if not uou_curr.empty:
         top3_df = uou_curr.nlargest(3, 'browse_count')
@@ -386,7 +401,7 @@ with tab_guide:
     else:
         st.info("이번 업데이트 이후 작성된 공략글이 없습니다.")
 
-# --- 🎨 TAB 3: 니케 아트 (미디어 및 반응 분석) ---
+# --- TAB 3: 니케 아트 (미디어 및 반응 분석) ---
 with tab_art:
     # 1. Supabase 데이터 로드 (로컬 CSV 탈출)
     try:
@@ -435,7 +450,7 @@ with tab_art:
                 if df.empty or df['browse_count'].sum() == 0: return 0.0
                 return (df['upvote_count'].sum() + df['comment_count'].sum()) / df['browse_count'].sum() * 100
 
-            # 3. 🏗️ 상단 레이아웃 (Metric)
+            # 3. 상단 레이아웃 (Metric)
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader("💡 Art Engagement Rate")
@@ -457,7 +472,7 @@ with tab_art:
 
             st.divider()
 
-            # 4. 🗣️ 중간 레이아웃 (태그 및 바이럴)
+            # 4. 중간 레이아웃 (태그 및 바이럴)
             col3, col4 = st.columns(2)
             with col3:
                 st.subheader("🏷️ 인기 태그 TOP 5")
@@ -477,7 +492,7 @@ with tab_art:
 
             st.divider()
 
-            # 5. 👑 하단 레이아웃: 인기 창작물 (이미지 렌더링 추가)
+            # 5. 하단 레이아웃: 인기 창작물 (이미지 렌더링 추가)
             st.subheader("🎨 이번 업데이트 인기 창작물 TOP 3")
             if not current_art.empty:
                 unique_posts = current_art.drop_duplicates(subset=['post_uuid']).copy()
