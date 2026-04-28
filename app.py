@@ -76,26 +76,21 @@ def build_context_text(df, df_comments, category_name):
 @st.cache_data(ttl=3600)
 def get_update_points():
     try:
+        # DB 쿼리 단계에서 바로 필터링.
         res = supabase.table("posts") \
             .select("created_at, title") \
             .eq("plate_name", "공식 뉴스") \
+            .ilike("title", "%업데이트 점검 종료 안내%") \
             .order("created_at", desc=True) \
-            .limit(100) \
+            .limit(2) \
             .execute()
 
-        df_official = pd.DataFrame(res.data)
+        df_updates = pd.DataFrame(res.data)
 
-        if df_official.empty:
-            return _get_default_ts()
-
-        # '업데이트 점검 종료 안내'가 포함된 글 필터링
-        updates = df_official[df_official['title'].str.contains('업데이트 점검 종료 안내', na=False)]
-
-        if len(updates) >= 2:
-            return int(updates.iloc[0]['created_at']), int(updates.iloc[1]['created_at'])
+        if len(df_updates) >= 2:
+            return int(df_updates.iloc[0]['created_at']), int(df_updates.iloc[1]['created_at'])
 
     except Exception as e:
-        # 타임아웃 등 DB 에러 발생 시 로그만 찍고 기본값 반환하여 앱 중단 방지
         print(f"Update points fetch error: {e}")
 
     return _get_default_ts()
