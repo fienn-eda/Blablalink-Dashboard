@@ -73,28 +73,38 @@ def build_context_text(df, df_comments, category_name):
     return "".join(text_chunks)
 
 # 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
+@st.cache_data(ttl=3600)
 def get_update_points():
-    # 다른 게시판 글에 밀리지 않도록 '공식 뉴스'만 저격.
-    res = supabase.table("posts") \
-        .select("created_at, title") \
-        .eq("plate_name", "공식 뉴스") \
-        .order("created_at", desc=True) \
-        .limit(200) \
-        .execute()
+    try:
+        res = supabase.table("posts") \
+            .select("created_at, title") \
+            .eq("plate_name", "공식 뉴스") \
+            .order("created_at", desc=True) \
+            .limit(100) \
+            .execute()
 
-    df_official = pd.DataFrame(res.data)
+        df_official = pd.DataFrame(res.data)
 
-    if df_official.empty:
-        return int(datetime.now().timestamp()), int((datetime.now() - timedelta(days=7)).timestamp())
+        if df_official.empty:
+            return _get_default_ts()
 
-    # '업데이트 점검 종료 안내'가 포함된 글 필터링
-    updates = df_official[df_official['title'].str.contains('업데이트 점검 종료 안내', na=False)]
+        # '업데이트 점검 종료 안내'가 포함된 글 필터링
+        updates = df_official[df_official['title'].str.contains('업데이트 점검 종료 안내', na=False)]
 
-    if len(updates) >= 2:
-        # DB에서 이미 정렬해서 가져왔으므로 순서대로 할당
-        return int(updates.iloc[0]['created_at']), int(updates.iloc[1]['created_at'])
+        if len(updates) >= 2:
+            return int(updates.iloc[0]['created_at']), int(updates.iloc[1]['created_at'])
 
-    return int(datetime.now().timestamp()), int((datetime.now() - timedelta(days=7)).timestamp())
+    except Exception as e:
+        # 타임아웃 등 DB 에러 발생 시 로그만 찍고 기본값 반환하여 앱 중단 방지
+        print(f"Update points fetch error: {e}")
+
+    return _get_default_ts()
+
+# 중복 코드를 방지하기 위한 도우미 함수
+def _get_default_ts():
+    now_ts = int(datetime.now().timestamp())
+    prev_ts = now_ts - (86400 * 14)
+    return now_ts, prev_ts
 
 # ==========================================
 # 2-1. 변수 할당 및 후속 처리
@@ -103,14 +113,13 @@ curr_update_ts, prev_update_ts = get_update_points()
 df_all = load_dashboard_data()
 
 # ==========================================
-# 2-2. 데이터 로드 및 마스터 방어막 (Early Exit)
+# 2-2. 데이터 로드 및 방어막
 # ==========================================
 # 데이터가 없거나 권한(RLS) 문제로 막힌 경우, 여기서 대시보드 렌더링을 완전히 멈춥니다.
-if df_all.empty or 'plate_name' not in df_all.columns:
+if df_all is None or df_all.empty:
     st.error("데이터베이스에서 데이터를 불러오지 못했습니다.")
-    st.info("해결 방법: Supabase 대시보드 -> Authentication -> Policies에서 'posts' 테이블의 RLS를 해제(Disable)해 주세요.")
-    st.stop() # 아래에 있는 함수나 UI 코드는 아예 실행되지 않음
-
+    st.info("잠시 후 다시 시도하시거나 Supabase의 RLS 설정을 확인해 주세요.")
+    st.stop()
 
 # ==========================================
 # 3. 메인 UI 구성 & 사이드바
