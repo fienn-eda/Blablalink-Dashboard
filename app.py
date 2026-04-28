@@ -64,12 +64,22 @@ def build_context_text(df, df_comments, category_name):
 
 # 📅 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
 def get_update_points(df):
+    # [방어 로직] 데이터프레임이 아예 비어있거나 'plate_name' 컬럼이 없는 경우의 안전장치
+    if df.empty or 'plate_name' not in df.columns:
+        # 데이터가 없을 때는 임시로 현재 시간과 7일 전 시간을 반환하여 대시보드가 터지지 않게 막습니다.
+        now_ts = int(datetime.now().timestamp())
+        prev_ts = now_ts - (86400 * 7) # 7일(초 단위) 전
+        return now_ts, prev_ts
+
     df_official = df[df['plate_name'] == '공식 뉴스']
-    updates = df_official[df_official['title'].str.contains('업데이트 점검 종료 안내', na=False)]
+    updates = df_official[df_official['title'].str.contains('업데이트', na=False)]
+
     if len(updates) >= 2:
         sorted_updates = updates.sort_values('created_at', ascending=False)
         return sorted_updates.iloc[0]['created_at'], sorted_updates.iloc[1]['created_at']
-    return int(datetime.now().timestamp()), int((datetime.now() - timedelta(days=14)).timestamp())
+
+    # 업데이트 글이 부족할 때의 기존 기본값 로직
+    return int(datetime.now().timestamp()), int((datetime.now() - timedelta(days=7)).timestamp())
 
 curr_update_ts, prev_update_ts = get_update_points(df_all)
 
