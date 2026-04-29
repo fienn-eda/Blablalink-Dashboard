@@ -6,6 +6,8 @@ import pandas as pd
 from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from google import genai # [04-29] 분석 보고서 생성도 자동화에 포함시키려고 추가했음
+import re                # [04-29] 분석 보고서 생성도 자동화에 포함시키려고 추가했음
 
 # ==========================================
 # ⚙️ 1. 통합 환경 설정
@@ -410,10 +412,123 @@ def run_v4_pipeline():
                 
         print(f"✅ [{plate['name']}] 처리가 모두 완료되었습니다. (신규: {total_loaded_posts}건)\n")
         time.sleep(random.uniform(2, 4))
+        
+# =====================================
+# [04-29] 분석 보고서 생성 및 DB에 적재하기 
+# =====================================
+# 텍스트 조립을 위한 도우미 함수 추가 (app.py에서 가져옴)
+def is_valid_comment(raw_text):
+    if not isinstance(raw_text, str): return False
+    pure_text = re.sub(r'<[^>]+>', '', raw_text).strip()
+    if len(pure_text) <= 2: return False
+    if not re.search(r'[가-힣a-zA-Z0-9ぁ-んァ-ヶ一-龥]', pure_text): return False
+    return True
+
+def build_context_text(df, df_comments, category_name):
+    text_chunks = [f"\n--- 📌 {category_name} ---\n"]
+    for _, row in df.iterrows():
+        text_chunks.append(f"제목: {row['title']}\n")
+        if not df_comments.empty and row['post_uuid'] in df_comments['post_uuid'].values:
+            post_comments = df_comments[df_comments['post_uuid'] == row['post_uuid']]
+            for _, crow in post_comments.iterrows():
+                text_chunks.append(f"  └ 베스트댓글({crow['upvote_count']}추천): {crow['content'][:100]}\n")
+    return "".join(text_chunks)
+
+# 완전 독립형 AI 보고서 생성 함수
+def generate_and_save_ai_report():
+    print("\nAI 분석 보고서 생성을 시작합니다...")
+    
+    # [1] DB에서 최근 24시간 데이터 직접 불러오기
+    try:
+        threshold_ts = int((datetime.now(timezone.utc) - pd.Timedelta(hours=24)).timestamp())
+        res = supabase.table("posts").select("*").gte("created_at", threshold_ts).execute()
+        df_latest = pd.DataFrame(res.data)
+        
+        if df_latest.empty:
+            print("분석할 최신 데이터가 없어 AI 보고서를 생략합니다.")
+            return
+            
+        df_out_pure = df_latest[(df_latest['plate_name'] == '전초기지') & (df_latest['is_official'] == False)].copy()
+        df_guide = df_latest[df_latest['plate_name'] == '유저 공략'].copy()
+        
+        risk_keywords = ['버그', '튕김', '팅김', '크래쉬', '불만', '어려움', '불합리', '점검', '오류', '문제', '이슈', '접속할 수 없']
+        df_out_pure['is_risk'] = df_out_pure['title'].str.contains('|'.join(risk_keywords), na=False)
+
+        # 타겟 게시글 선정
+        outpost_top = df_out_pure.sort_values(['comment_count', 'created_at'], ascending=False).head(20)
+        risk_top = df_out_pure[df_out_pure['is_risk']].head(10)
+        guide_top = df_guide.nlargest(5, 'browse_count')
+
+        target_posts = pd.concat([outpost_top, risk_top, guide_top]).drop_duplicates('post_uuid')
+        target_uuids = target_posts['post_uuid'].dropna().unique().tolist()
+
+        # 타겟 댓글 수집
+        df_comments = pd.DataFrame()
+        if target_uuids:
+            res_comments = supabase.table("comments").select("post_uuid, content, upvote_count").in_("post_uuid", target_uuids).execute()
+            if res_comments.data:
+                df_comments = pd.DataFrame(res_comments.data)
+                df_comments = df_comments[df_comments['content'].apply(is_valid_comment)]
+                df_comments = df_comments.sort_values('upvote_count', ascending=False).groupby('post_uuid').head(3)
+
+        final_context = ""
+        final_context += build_context_text(outpost_top, df_comments, "일반 여론 (전초기지)")
+        final_context += build_context_text(risk_top, df_comments, "리스크 감지 게시글")
+        final_context += build_context_text(guide_top, df_comments, "유저 공략 트렌드")
+
+    except Exception as e:
+        print(f"데이터 전처리 실패: {e}")
+        return
+
+    # [2] AI 분석 수행
+    try:
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+        # 최신 권장 모델 포맷으로 변경
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        
+        # 니케 도메인 지식 읽어오기
+        nikke_base = ""
+        try:
+            # 깃허브 서버의 현재 작업 디렉토리 기준
+            with open("nikke_base.md", "r", encoding="utf-8") as f:
+                nikke_base = f.read()
+        except FileNotFoundError:
+            print("nikke_base.md 파일을 찾을 수 없어 배경지식 없이 분석을 진행합니다.")
+            nikke_base = "별도의 배경지식이 제공되지 않았습니다."
+        
+        prompt = f"""
+        너는 '승리의 여신: 니케'의 시니어 전략 분석가야.
+        
+        다음은 네가 분석할 때 반드시 참고해야 할 [인게임 배경지식]이야.
+        {nikke_base}
+
+        위 배경지식과 다음 데이터를 종합하여 경영진용 [전략 분석 리포트]를 작성해.
+        
+        [분석 데이터]
+        {final_context}
+
+        [보고서 필수 포함 항목]
+         - **핵심 여론 요약**: 현재 유저들이 가장 열광하거나 분노하는 지점이 무엇인지 베스트 댓글을 근거로 3줄 이내 요약.
+         - **리스크 심층 분석**: 리스크 게시글들이 실제 시스템적 결함인지, 단순 감정적 불만인지 구분하여 분석.
+         - **유저 공략 트렌드**: 유저들이 현재 어떤 콘텐츠(공략)에 집중하고 있는지 파악.
+         - **미래 전략**: 핵심 여론, 리스크 분석, 공략 트렌드 분석을 기반으로 향후 업데이트 방향성 및 운영 전략을 제시.
+        """
+        response = model.generate_content(prompt)
+        # [3] Supabase에 저장
+        supabase.table("ai_summaries").insert({
+            "category_name": "Daily Insight",
+            "summary_content": response.text,
+            "update_ts_range": f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+        }).execute()
+        print("AI 분석 보고서 DB 적재 완료!")
+        
+    except Exception as e:
+        print(f"AI 리포트 생성 및 적재 실패: {e}")
 
 # ==========================================
 # 5. 파이프라인 실행 트리거
 # ==========================================
 if __name__ == "__main__":
     run_v4_pipeline()
-    print("🏁 전체 4개 탭 수집 파이프라인이 정상적으로 완료되었습니다!")
+    generate_and_save_ai_report() # 크롤링이 완벽히 끝난 직후 실행
+    print("🏁 전체 수집 및 AI 분석 파이프라인이 정상 완료되었습니다!")
