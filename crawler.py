@@ -16,7 +16,7 @@ TARGET_PLATES = [
     {"name": "공식 뉴스", "plate_id": 43, "plate_unique_id": "official", "storage": "DB"},
     {"name": "유저 공략", "plate_id": 45, "plate_unique_id": "guides", "storage": "DB"},
     {"name": "전초기지", "plate_id": 38, "plate_unique_id": "outpost", "storage": "DB"},
-    {"name": "니케 아트", "plate_id": 39, "plate_unique_id": "nikkeart", "storage": "CSV"}
+    {"name": "니케 아트", "plate_id": 39, "plate_unique_id": "nikkeart", "storage": "DB"}
 ]
 # 니케 아트 탭 전용 설정
 SAVE_DIR = "./nikke_arts"
@@ -55,6 +55,9 @@ def parse_unified_data(raw_json, plate_name):
     
     # 텍스트 정제 (줄바꿈 제거)
     summary = str(raw_json.get("content_summary", "")).replace('\n', ' ').strip()
+
+    raw_pic_urls = raw_json.get("pic_urls") or []
+    image_url_str = "|".join(raw_pic_urls) if raw_pic_urls else None
     
     return {
         "post_uuid": str(raw_json.get("post_uuid")),
@@ -76,7 +79,8 @@ def parse_unified_data(raw_json, plate_name):
         
         "is_official": bool(raw_json.get("is_official") or False),
         "created_at": raw_json.get("created_on"),
-        "image_urls": raw_json.get("pic_urls") or []
+        # "image_urls": raw_json.get("pic_urls") or []
+        "image_url": image_url_str
     }
 
 def load_post(parsed_post: dict):
@@ -323,7 +327,6 @@ def run_v4_pipeline():
                         continue
                         
                     elif CRAWL_MODE == "HISTORY":
-                        # DB인 경우에만 덮어쓰기 진행 (CSV는 마지막에 Pandas가 일괄 병합함)
                         if plate['storage'] == "DB":
                             print(f"    🔄 [지표 업데이트] 기존 글에 새로운 데이터를 덮어씁니다.")
                             load_post(parsed_post)
@@ -334,47 +337,14 @@ def run_v4_pipeline():
                     consecutive_duplicates = 0
            
                     # ==========================================
-                    # 🔀 [핵심] Storage 분기 처리 로직
+                    # [04-30] DB로 통일
                     # ==========================================
                     if plate['storage'] == "DB":
-                        # DB 적재 (기존 로직)
                         if load_post(parsed_post):
                             total_loaded_posts += 1
-                            # fetch_all_comments_for_post 함수가 정의되어 있다고 가정
                             flat_comments = fetch_all_comments_for_post(post_uuid) 
                             if flat_comments:
                                 load_comments(flat_comments, post_uuid)
-                                
-                    # elif plate['storage'] == "CSV":
-                    #     # 로컬 이미지 다운로드 및 CSV 기록 (아트 탭 전용)
-                    #     if parsed_post["image_urls"]:
-                    #         downloaded_paths = download_images(parsed_post)
-                    #         if downloaded_paths:
-                    #             total_loaded_posts += len(downloaded_paths)
-                    #             for path in downloaded_paths:
-                    #                 record = parsed_post.copy()
-                    #                 del record['image_urls']
-                    #                 record['filename'] = os.path.basename(path)
-                    #                 new_metadata_records.append(record)
-
-                    # [04-28] 추후 DB에 적재하기 위해 변경 
-                    elif plate['storage'] == "CSV":
-                        # 클라우드 최적화: 18GB 다운로드 삭제, URL 파이프(|) 결합 저장
-                        record = parsed_post.copy()
-                        
-                        if record.get("image_urls"):
-                            # 리스트 형태의 URL들을 파이프(|)로 묶어서 하나의 문자열로 만듭니다.
-                            record['image_url'] = "|".join(record['image_urls'])
-                        else:
-                            record['image_url'] = None
-                            
-                        # CSV에는 리스트 객체를 바로 넣을 수 없으므로 원본 리스트는 삭제합니다.
-                        del record['image_urls'] 
-                        
-                        # 파일명은 이제 필요 없으니 삭제.
-                        if 'filename' in record: del record['filename']
-                        
-                        new_metadata_records.append(record)
 
             if is_finish: break # While 루프 완전 탈출
             
@@ -395,24 +365,6 @@ def run_v4_pipeline():
             
             time.sleep(random.uniform(1.5, 3.0))
 
-        # ==========================================
-        # 💾 CSV 최종 병합 로직 (해당 게시판 루프가 끝난 직후 실행)
-        # ==========================================
-        if plate['storage'] == "CSV" and new_metadata_records:
-            df_new = pd.DataFrame(new_metadata_records)
-            if os.path.exists(CSV_PATH):
-                df_existing = pd.read_csv(CSV_PATH)
-                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                df_final = df_combined.drop_duplicates(subset=['filename'], keep='last')
-                df_final.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
-                print(f"📊 [CSV 저장] {plate['name']} 메타데이터 {len(df_final)}건 갱신 완료!")
-            else:
-                df_new.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
-                print(f"📊 [CSV 생성] {plate['name']} 메타데이터 {len(df_new)}건 저장 완료!")
-                
-        print(f"✅ [{plate['name']}] 처리가 모두 완료되었습니다. (신규: {total_loaded_posts}건)\n")
-        time.sleep(random.uniform(2, 4))
-        
 # =====================================
 # [04-29] 분석 보고서 생성 및 DB에 적재하기 
 # =====================================
@@ -482,14 +434,11 @@ def generate_and_save_ai_report():
 
     # [2] AI 분석 수행
     try:
-        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-        # 최신 권장 모델 포맷으로 변경
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         
-        # 니케 도메인 지식 읽어오기
+        # 니케 백과사전 읽어오기
         nikke_base = ""
         try:
-            # 깃허브 서버의 현재 작업 디렉토리 기준
             with open("nikke_base.md", "r", encoding="utf-8") as f:
                 nikke_base = f.read()
         except FileNotFoundError:
@@ -508,12 +457,17 @@ def generate_and_save_ai_report():
         {final_context}
 
         [보고서 필수 포함 항목]
-         - **핵심 여론 요약**: 현재 유저들이 가장 열광하거나 분노하는 지점이 무엇인지 베스트 댓글을 근거로 3줄 이내 요약.
-         - **리스크 심층 분석**: 리스크 게시글들이 실제 시스템적 결함인지, 단순 감정적 불만인지 구분하여 분석.
-         - **유저 공략 트렌드**: 유저들이 현재 어떤 콘텐츠(공략)에 집중하고 있는지 파악.
-         - **미래 전략**: 핵심 여론, 리스크 분석, 공략 트렌드 분석을 기반으로 향후 업데이트 방향성 및 운영 전략을 제시.
+        - **핵심 여론 요약**: 베스트 댓글을 근거로 3줄 이내 요약.
+        - **리스크 심층 분석**: 시스템적 결함인지 단순 불만인지 분석.
+        - **유저 공략 트렌드**: 주력 콘텐츠 파악.
+        - **미래 전략**: 향후 운영 전략 제시.
         """
-        response = model.generate_content(prompt)
+        
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+
         # [3] Supabase에 저장
         supabase.table("ai_summaries").insert({
             "category_name": "Daily Insight",

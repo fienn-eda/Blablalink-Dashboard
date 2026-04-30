@@ -384,24 +384,9 @@ with tab_guide:
 with tab_art:
     # 1. Supabase 데이터 로드 (로컬 CSV 탈출)
     try:
-        # DB에서 전체 데이터를 가져옵니다. 
-        # (추후 데이터가 수만 건이 넘어가면 .select() 안에 필요한 컬럼만 명시하거나 필터링을 추가하여 최적화하세요.)
-        response = supabase.table("nikke_arts").select("*").execute()
+        df_art = df_all[df_all['plate_name'] == '니케 아트'].copy()
 
-        if response.data:
-            df_art = pd.DataFrame(response.data)
-
-            # [데이터 정제] created_at이 numeric(float)으로 들어오므로 변환
-            df_art['created_at'] = pd.to_numeric(df_art['created_at'], errors='coerce')
-            df_art = df_art.dropna(subset=['created_at'])
-
-            # 유효한 타임스탬프 범위 필터링
-            df_art = df_art[(df_art['created_at'] > 1000000000) & (df_art['created_at'] < 2000000000)]
-
-            # 시간대 변환 (UTC -> Asia/Seoul)
-            df_art['created_at_dt'] = pd.to_datetime(df_art['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
-            df_art['date'] = df_art['created_at_dt'].dt.date
-
+        if not df_art.empty:
             now_dt = datetime.now(df_art['created_at_dt'].dt.tz)
 
             # 2. DoD / UoU 동적 필터링 로직 (기존 유지)
