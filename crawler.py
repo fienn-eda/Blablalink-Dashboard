@@ -55,9 +55,6 @@ def parse_unified_data(raw_json, plate_name):
     
     # 텍스트 정제 (줄바꿈 제거)
     summary = str(raw_json.get("content_summary", "")).replace('\n', ' ').strip()
-
-    raw_pic_urls = raw_json.get("pic_urls") or []
-    image_url_str = "|".join(raw_pic_urls) if raw_pic_urls else None
     
     return {
         "post_uuid": str(raw_json.get("post_uuid")),
@@ -79,8 +76,7 @@ def parse_unified_data(raw_json, plate_name):
         
         "is_official": bool(raw_json.get("is_official") or False),
         "created_at": raw_json.get("created_on"),
-        # "image_urls": raw_json.get("pic_urls") or []
-        "image_url": image_url_str
+        "image_urls": raw_json.get("pic_urls") or []
     }
 
 def load_post(parsed_post: dict):

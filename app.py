@@ -1,3 +1,4 @@
+%%writefile app.py
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
@@ -25,51 +26,51 @@ def load_dashboard_data():
     # [DB] 시간 필터 대신 최신글 5000개만
     res = supabase.table("posts").select("*").order("created_at", desc=True).limit(5000).execute()
     df = pd.DataFrame(res.data)
-
+    
     if not df.empty:
         # [Pandas] 텍스트나 타임스탬프를 숫자로 강제 변환
         df['created_at'] = pd.to_numeric(df['created_at'], errors='coerce')
         df = df.dropna(subset=['created_at'])
-
+        
         # 분석을 위해 넉넉히 최근 45일치만 판다스 메모리 단에서 필터링
         threshold_ts = int((datetime.now() - timedelta(days=45)).timestamp())
         df = df[df['created_at'] >= threshold_ts]
-
+        
         # 시간 변환 (초 단위 타임스탬프 기준)
         df['created_at_dt'] = pd.to_datetime(df['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
         df['date'] = df['created_at_dt'].dt.date
-
+        
     return df
 
 # 댓글의 노이즈를 필터링하는 도우미 함수
 def is_valid_comment(raw_text):
     if not isinstance(raw_text, str): return False
-
+        
     # HTML 태그 제거
     pure_text = re.sub(r'<[^>]+>', '', raw_text).strip()
-
+    
     # 2글자 이하 필터링
     if len(pure_text) <= 2: return False
-
+    
     # 한/영/숫자/일어 포함 여부 검사
     if not re.search(r'[가-힣a-zA-Z0-9ぁ-んァ-ヶ一-龥]', pure_text): 
         return False
-
+    
     return True
 
 # AI 프롬프트용 텍스트 조립기 (List Join 방식)
 def build_context_text(df, df_comments, category_name):
     # += 대신 리스트에 append 후 join
     text_chunks = [f"\n--- 📌 {category_name} ---\n"]
-
+    
     for _, row in df.iterrows():
         text_chunks.append(f"제목: {row['title']}\n")
-
+        
         if not df_comments.empty and row['post_uuid'] in df_comments['post_uuid'].values:
             post_comments = df_comments[df_comments['post_uuid'] == row['post_uuid']]
             for _, crow in post_comments.iterrows():
                 text_chunks.append(f"  └ 베스트댓글({crow['upvote_count']}추천): {crow['content'][:100]}\n")
-
+                
     return "".join(text_chunks)
 
 # 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
@@ -84,15 +85,15 @@ def get_update_points():
             .order("created_at", desc=True) \
             .limit(2) \
             .execute()
-
+        
         df_updates = pd.DataFrame(res.data)
-
+        
         if len(df_updates) >= 2:
             return int(df_updates.iloc[0]['created_at']), int(df_updates.iloc[1]['created_at'])
-
+            
     except Exception as e:
         print(f"Update points fetch error: {e}")
-
+        
     return _get_default_ts()
 
 # DB에서 보고서 가져오는 함수
@@ -108,7 +109,7 @@ def get_latest_ai_summary():
     except Exception as e:
         print(f"AI Report fetch error: {e}")
         return None
-
+        
 # 중복 코드를 방지하기 위한 도우미 함수
 def _get_default_ts():
     now_ts = int(datetime.now().timestamp())
@@ -148,10 +149,10 @@ tab_outpost, tab_guide, tab_art = st.tabs(["🗣️ 전초기지 (여론)", "�
 
 # --- TAB 1: 전초기지 (다이내믹 필터링 적용) ---
 with tab_outpost:
-
+    
     # 모드에 따른 동적 시간 필터링 계산
     now_dt = datetime.now(df_out_pure['created_at_dt'].dt.tz)
-
+    
     # 업데이트 기준일 (UTC -> KST 변환 보장)
     curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
     prev_update_dt = pd.to_datetime(prev_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
@@ -199,14 +200,14 @@ with tab_outpost:
 
     current_df['is_risk'] = current_df['title'].str.contains('|'.join(risk_keywords), na=False)
     compare_df['is_risk'] = compare_df['title'].str.contains('|'.join(risk_keywords), na=False)
-
+    
     curr_risk_cnt = current_df['is_risk'].sum()
     comp_risk_cnt = compare_df['is_risk'].sum()
     risk_delta = int(curr_risk_cnt - comp_risk_cnt)
 
     # 3. 레이아웃 배치
     top_col1, top_col2 = st.columns(2)
-
+    
     with top_col1:
         st.subheader("📈 Sentiment Score")
         st.metric(label="유저 긍정 지수", 
@@ -220,12 +221,12 @@ with tab_outpost:
     with top_col2:
         # [04-17 추가] help 파라미터를 이용해 i 아이콘 툴팁 생성
         st.subheader("🚨 Risk Spike", help=f"감지 대상 키워드: {', '.join(risk_keywords)}")
-
+        
         st.metric(label="리스크 키워드 감지", 
                   value=f"{curr_risk_cnt} 건", 
                   delta=f"{risk_delta} 건 ({delta_label})", 
                   delta_color="inverse")
-
+                  
         if not current_df.empty:
             risk_trend = current_df[current_df['is_risk']].groupby(chart_group).size()
             st.line_chart(risk_trend, height=200)
@@ -233,17 +234,17 @@ with tab_outpost:
             # [04-17 추가] 리스크 감지 게시글 링크 제공 (원인 분석)
             if curr_risk_cnt > 0:
                 st.markdown("#### 🔗 감지된 주요 리스크 게시글")
-
+                
                 # 최신순으로 정렬 최대 3개만 표시 (UI가 너무 길어지는 것 방지)
                 risk_posts = current_df[current_df['is_risk']].sort_values(by='created_at_dt', ascending=False).head(3)
-
+                
                 for idx, row in risk_posts.iterrows():
                     post_url = f"https://www.blablalink.com/post/detail?post_uuid={row['post_uuid']}"
-
+                    
                     # 제목에서 어떤 리스크 키워드가 걸렸는지 역추적
                     caught_keywords = [w for w in risk_keywords if w in str(row['title'])]
                     keyword_tags = ", ".join(caught_keywords)
-
+                    
                     # 마크다운을 이용한 하이퍼링크 및 태그 출력
                     st.markdown(f"- [{row['title']}]({post_url})  🚨`{keyword_tags}`")
 
@@ -275,10 +276,10 @@ with tab_outpost:
 
     with col_sent2:
         st.markdown("### 실시간 이슈 통합 리포트")
-
+        
         # 자동으로 최신 리포트를 표시
         latest_report = get_latest_ai_summary()
-
+        
         if latest_report:
             # 날짜 형식 포맷팅 (YYYY-MM-DD)
             report_date = latest_report['created_at'][:10]
@@ -289,7 +290,7 @@ with tab_outpost:
 
 # --- TAB 2: 유저 공략 ---
 with tab_guide:
-
+    
     # 1. 🕒 시간 필터링 데이터 준비
     now_dt = datetime.now(df_guide['created_at_dt'].dt.tz)
     curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
@@ -311,7 +312,7 @@ with tab_guide:
 
     # 3. 상단 레이아웃 (1. 참여도 / 2. 트래픽)
     col1, col2 = st.columns(2)
-
+    
     with col1:
         st.subheader("💡 Engagement Rate", help="참여도 = (좋아요 수 + 댓글 수) / 조회수")
         eng_curr = get_eng_rate(uou_curr)
@@ -319,7 +320,7 @@ with tab_guide:
         st.metric(label=f"이번 업데이트 참여도 ({curr_update_dt.strftime('%m/%d')}~)", 
                   value=f"{eng_curr:.2f}%", 
                   delta=f"{eng_curr - eng_prev:+.2f}%p (UoU)")
-
+        
         # 참여도 일별 추이 (라인 그래프)
         if not uou_curr.empty:
             eng_trend = uou_curr.groupby('date').apply(get_eng_rate, include_groups=False)
@@ -332,7 +333,7 @@ with tab_guide:
         st.metric(label="최근 24시간 신규 게시글", 
                   value=f"{traf_curr} 건", 
                   delta=f"{traf_curr - traf_prev:+} 건 (DoD)")
-
+        
         # 트래픽 시간별 추이 (라인 그래프)
         if not dod_curr.empty:
             dod_curr['hour'] = dod_curr['created_at_dt'].dt.strftime('%m-%d %H:00')
@@ -344,17 +345,17 @@ with tab_guide:
     # 4. 중간 레이아웃: Share of Voice (키워드 추출)
     st.subheader("📊 Share of Voice (Top 5 키워드)")
     st.caption("최근 업데이트 이후 유저 공략 탭에서 가장 많이 언급된 단어입니다.")
-
+    
     if not uou_curr.empty:
         # 명사 위주의 정규식 카운팅
         stop_words = ['공략', '니케', '뉴비', '질문', '이거', '어떻게', '진짜', '너무']
         all_text = " ".join(uou_curr['title'].astype(str).tolist())
         words = re.findall(r'[가-힣A-Za-z]{2,}', all_text) # 2글자 이상 한글/영문 추출
         filtered_words = [w for w in words if w not in stop_words]
-
+        
         top_5_words = Counter(filtered_words).most_common(5)
         df_sov = pd.DataFrame(top_5_words, columns=['키워드', '빈도수'])
-
+        
         # Plotly를 활용한 내림차순 & 디자인
         fig_sov = px.bar(df_sov, x='키워드', y='빈도수', text='빈도수', 
                          color='빈도수', color_continuous_scale='Blues')
@@ -371,7 +372,7 @@ with tab_guide:
         for idx, row in top3_df.iterrows():
             # 네이버 게임 라운지 표준 URL 형식 (게시판 고유 ID 적용)
             post_url = f"https://www.blablalink.com/post/detail?post_uuid={row['post_uuid']}"
-
+            
             # Streamlit Markdown을 이용해 클릭 가능한 하이퍼링크 생성
             st.markdown(f"""
             #### 🔗 [{row['title']}]({post_url})
@@ -385,10 +386,10 @@ with tab_art:
     # 1. Supabase 데이터 로드 (로컬 CSV 탈출)
     try:
         df_art = df_all[df_all['plate_name'] == '니케 아트'].copy()
-
+        
         if not df_art.empty:
             now_dt = datetime.now(df_art['created_at_dt'].dt.tz)
-
+            
             # 2. DoD / UoU 동적 필터링 로직 (기존 유지)
             if "UoU" in analysis_mode:
                 current_art = df_art[df_art['created_at_dt'] >= curr_update_dt].copy()
@@ -462,20 +463,20 @@ with tab_art:
                 unique_posts = current_art.drop_duplicates(subset=['post_uuid']).copy()
                 unique_posts['popularity_score'] = unique_posts['browse_count'] + (unique_posts['upvote_count'] * 10)
                 top3_art = unique_posts.nlargest(3, 'popularity_score')
-
+                
                 # 가로로 3개의 컬럼을 만들어 이미지를 배치
                 art_cols = st.columns(3)
                 for i, (idx, row) in enumerate(top3_art.iterrows()):
                     with art_cols[i]:
-                        # 💡 다중 이미지 처리: 파이프(|)로 쪼개서 첫 번째 이미지만 썸네일로 활용
-                        img_urls = str(row['image_url']).split('|')
-                        display_img = img_urls[0] if img_urls[0] != "NO_IMAGE" else None
-
+                        # 첫 번째 이미지만 썸네일로 활용
+                        img_urls = row.get('image_urls', [])
+                        display_img = img_urls[0] if isinstance(img_urls, list) and len(img_urls) > 0 else None
+                        
                         if display_img:
                             st.image(display_img, width='stretch')
                         else:
-                            st.info("이미지를 불러올 수 없는 게시글입니다.")
-
+                            st.info("이미지가 없는 게시글입니다.")
+                            
                         post_url = f"https://www.blablalink.com/post/detail?post_uuid={row['post_uuid']}"
                         st.markdown(f"**[{row['title']}]({post_url})**")
                         st.caption(f"👁️ {row['browse_count']:,} | 👍 {row['upvote_count']:,} | 🔄 {row['forward_count']:,}")
