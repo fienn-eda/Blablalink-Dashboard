@@ -459,10 +459,25 @@ def generate_and_save_ai_report():
         - **미래 전략**: 향후 운영 전략 제시.
         """
         
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
+        max_retries = 3
+        retry_delay = 30 # 초 대기
+
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt
+                )
+                break # 성공하면 반복문 탈출!
+                
+            except Exception as e:
+                # 에러 메시지에 '503'이나 'UNAVAILABLE'이 포함되어 있고, 아직 재시도 기회가 남았다면
+                if ("503" in str(e) or "UNAVAILABLE" in str(e)) and attempt < max_retries - 1:
+                    print(f"⚠️ 구글 AI 서버 일시적 혼잡 (503 에러). {retry_delay}초 후 다시 시도합니다... (시도 횟수: {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    # 다른 치명적인 에러거나, 3번 다 실패했다면 에러를 뱉고 포기
+                    raise e
 
         # [3] Supabase에 저장
         supabase.table("ai_summaries").insert({
