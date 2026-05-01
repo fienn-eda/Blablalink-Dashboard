@@ -18,10 +18,6 @@ TARGET_PLATES = [
     {"name": "전초기지", "plate_id": 38, "plate_unique_id": "outpost", "storage": "DB"},
     {"name": "니케 아트", "plate_id": 39, "plate_unique_id": "nikkeart", "storage": "DB"}
 ]
-# 니케 아트 탭 전용 설정
-SAVE_DIR = "./nikke_arts"
-os.makedirs(SAVE_DIR, exist_ok=True)
-CSV_PATH = os.path.join(SAVE_DIR, "metadata.csv")
 
 # .env 파일 안의 내용들을 읽어와서 컴퓨터 환경 변수로.
 load_dotenv()
@@ -114,59 +110,29 @@ def load_comments(flat_comments: list, post_uuid: str):
     except Exception as e:
         print(f"[댓글 적재 실패] {e}")
 
-def download_images(parsed_art):
-    post_uuid = parsed_art["post_uuid"]
-    urls = parsed_art["image_urls"]
-    saved_file_paths = [] 
-    
-    for idx, url in enumerate(urls):
-        try:
-            if ".gif" in url.lower(): continue
-            filename = f"{post_uuid}_{idx}.jpg"
-            filepath = os.path.join(SAVE_DIR, filename)
-            
-            if os.path.exists(filepath):
-                saved_file_paths.append(filepath)
-                continue
-                
-            res = requests.get(url, stream=True, timeout=10)
-            if res.status_code == 200:
-                with open(filepath, 'wb') as f:
-                    for chunk in res.iter_content(1024):
-                        f.write(chunk)
-                saved_file_paths.append(filepath)
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"[이미지 다운로드 실패] {url} - 사유: {e}")
-    return saved_file_paths
-
 # ==========================================
 # 🛠️ 3. 증분 수집을 위한 DB 사전 조회
 # ==========================================
 def get_existing_uuids(plate_name):
-    """DB에서 '해당 게시판'에 속한 모든 게시글 ID를 가져와 Set으로 반환합니다."""
-    print(f"🔍 DB에서 [{plate_name}]의 기존 수집된 ID를 불러옵니다...")
+    """DB에서 '해당 게시판'의 최근 수집된 ID 300개를 가져와 Set으로 반환합니다."""
+    print(f"DB에서 [{plate_name}]의 최근 ID 목록을 불러옵니다...")
     try:
-        # 💡 시니어의 수정: plate_name으로 필터링하고, limit을 과감히 없애거나 아주 넉넉하게(10만 등) 줍니다.
-        res = supabase.table("posts").select("post_uuid").eq("plate_name", plate_name).limit(100000).execute()
+        # 10만 개 풀스캔(Full-scan) 대신, 최근 300개만
+        # 최신글부터 가져오도록 order 조건
+        res = supabase.table("posts") \
+            .select("post_uuid") \
+            .eq("plate_name", plate_name) \
+            .order("created_at", desc=True) \
+            .limit(300) \
+            .execute()
+            
         existing_uuids = set(item['post_uuid'] for item in res.data)
-        print(f"{len(existing_uuids)}개의 기존 ID를 메모리에 로드했\n")
+        print(f"{len(existing_uuids)}개의 최근 ID를 메모리에 로드했습니다.\n")
         return existing_uuids
+        
     except Exception as e:
-        print(f"기존 ID 불러오기 실패 (초기 수집으로 간주): {e}\n")
+        print(f"최근 ID 불러오기 실패 (초기 수집으로 간주): {e}\n")
         return set()
-
-def get_existing_art_uuids():
-    """CSV 장부에서 아트 탭 ID를 불러옵니다 (누락 복구)"""
-    if os.path.exists(CSV_PATH):
-        try:
-            df = pd.read_csv(CSV_PATH)
-            existing_uuids = set(df['post_uuid'].astype(str))
-            print(f"아트 탭 기존 장부 발견 {len(existing_uuids)}개의 기록을 메모리에 올렸습니다.")
-            return existing_uuids
-        except Exception as e:
-            print(f"CSV 장부 읽기 실패: {e}")
-    return set()
 
 # ==========================================
 # 🛠️ 3-2. 댓글 수집
@@ -251,13 +217,9 @@ def run_v4_pipeline():
             CRAWL_MODE = "HISTORY"
         else:
             CRAWL_MODE = "UPDATE"
-            
-        # 2. Storage에 따른 과거 기록(장부) 로드 및 초기화
-        if plate['storage'] == "DB":
-            existing_uuids = get_existing_uuids(plate['name'])
-        else:
-            existing_uuids = get_existing_art_uuids()
-            new_metadata_records = []
+
+        # [05-01] DB에만 적재하니까 아트 탭만 따로 조회 불필요 -> 하나로 통일
+        existing_uuids = get_existing_uuids(plate['name'])
             
         is_finish = False
         current_cursor = ""
@@ -459,25 +421,10 @@ def generate_and_save_ai_report():
         - **미래 전략**: 향후 운영 전략 제시.
         """
         
-        max_retries = 3
-        retry_delay = 30 # 초 대기
-
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt
-                )
-                break # 성공하면 반복문 탈출!
-                
-            except Exception as e:
-                # 에러 메시지에 '503'이나 'UNAVAILABLE'이 포함되어 있고, 아직 재시도 기회가 남았다면
-                if ("503" in str(e) or "UNAVAILABLE" in str(e)) and attempt < max_retries - 1:
-                    print(f"⚠️ 구글 AI 서버 일시적 혼잡 (503 에러). {retry_delay}초 후 다시 시도합니다... (시도 횟수: {attempt + 1}/{max_retries})")
-                    time.sleep(retry_delay)
-                else:
-                    # 다른 치명적인 에러거나, 3번 다 실패했다면 에러를 뱉고 포기
-                    raise e
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
 
         # [3] Supabase에 저장
         supabase.table("ai_summaries").insert({
