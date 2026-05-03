@@ -460,6 +460,8 @@ with tab_art:
                         fig_tags = px.bar(top_tags, x='태그', y='빈도수', text='빈도수', color='빈도수', color_continuous_scale='Purples')
                         fig_tags.update_layout(xaxis={'categoryorder':'total descending'}, showlegend=False, height=350, margin=dict(l=0, r=0, t=30, b=0))
                         st.plotly_chart(fig_tags, width='stretch')
+                    else:
+                        st.info("집계할 유효한 태그 데이터가 없습니다.")
 
             with col4:
                 st.subheader("🔄 바이럴 트렌드 (공유 횟수)")
