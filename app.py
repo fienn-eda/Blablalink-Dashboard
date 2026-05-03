@@ -453,15 +453,42 @@ with tab_art:
             with col3:
                 st.subheader("🏷️ 인기 태그 TOP 5")
                 if not current_art.empty:
-                    all_tags = current_art['tags'].replace('태그 없음', None).dropna().str.split(',').explode().str.strip()
+                    def extract_tags(tag_data):
+                        if isinstance(tag_data, list):
+                            return tag_data
+                        elif isinstance(tag_data, str):
+                            # DB에 "['태그1', '태그2']" 같은 문자열 형태로 들어간 경우
+                            if tag_data.startswith('[') and tag_data.endswith(']'):
+                                import ast
+                                try:
+                                    return ast.literal_eval(tag_data)
+                                except:
+                                    return []
+                            # "태그1, 태그2" 같은 일반 문자열인 경우
+                            return [t.strip() for t in tag_data.split(',')]
+                        return []
+
+                    # 파서를 적용하여 리스트로 변환 후, explode시켜 행을 나눔
+                    all_tags = current_art['tags'].dropna().apply(extract_tags).explode()
+
+                    # 공백 제거나 불필요한 태그 날리기 (pandas의 .isin 활용)
                     if not all_tags.empty:
-                        top_tags = all_tags.value_counts().head(5).reset_index()
-                        top_tags.columns = ['태그', '빈도수']
-                        fig_tags = px.bar(top_tags, x='태그', y='빈도수', text='빈도수', color='빈도수', color_continuous_scale='Purples')
-                        fig_tags.update_layout(xaxis={'categoryorder':'total descending'}, showlegend=False, height=350, margin=dict(l=0, r=0, t=30, b=0))
-                        st.plotly_chart(fig_tags, width='stretch')
+                        # 앞뒤 공백 제거 후 쓰레기 데이터 제외
+                        all_tags = all_tags.astype(str).str.strip()
+                        valid_tags = all_tags[~all_tags.isin(["", "태그 없음", "None", "nan"])]
+
+                        if not valid_tags.empty:
+                            top_tags = valid_tags.value_counts().head(5).reset_index()
+                            top_tags.columns = ['태그', '빈도수']
+
+                            fig_tags = px.bar(top_tags, x='태그', y='빈도수', text='빈도수', color='빈도수', color_continuous_scale='Purples')
+                            fig_tags.update_layout(xaxis={'categoryorder':'total descending'}, showlegend=False, height=350, margin=dict(l=0, r=0, t=30, b=0))
+
+                            st.plotly_chart(fig_tags, use_container_width=True)
+                        else:
+                            st.info("집계할 유효한 태그 데이터가 없습니다.")
                     else:
-                        st.info("집계할 유효한 태그 데이터가 없습니다.")
+                        st.info("집계할 태그 데이터가 존재하지 않습니다.")
 
             with col4:
                 st.subheader("🔄 바이럴 트렌드 (공유 횟수)")
