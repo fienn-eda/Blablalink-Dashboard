@@ -20,26 +20,11 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ==========================================
 #  2. 함수 모은거
 # ==========================================
-@st.cache_data(ttl=3600)
-def load_dashboard_data():
-    # [DB] 시간 필터 대신 최신글 5000개만
-    res = supabase.table("posts").select("*").order("created_at", desc=True).limit(5000).execute()
-    df = pd.DataFrame(res.data)
-
-    if not df.empty:
-        # [Pandas] 텍스트나 타임스탬프를 숫자로 강제 변환
-        df['created_at'] = pd.to_numeric(df['created_at'], errors='coerce')
-        df = df.dropna(subset=['created_at'])
-
-        # 분석을 위해 넉넉히 최근 45일치만 판다스 메모리 단에서 필터링
-        threshold_ts = int((datetime.now() - timedelta(days=45)).timestamp())
-        df = df[df['created_at'] >= threshold_ts]
-
-        # 시간 변환 (초 단위 타임스탬프 기준)
-        df['created_at_dt'] = pd.to_datetime(df['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
-        df['date'] = df['created_at_dt'].dt.date
-
-    return df
+# 중복 코드를 방지하기 위한 도우미 함수
+def _get_default_ts():
+    now_ts = int(datetime.now().timestamp())
+    prev_ts = now_ts - (86400 * 14)
+    return now_ts, prev_ts
 
 # 댓글의 노이즈를 필터링하는 도우미 함수
 def is_valid_comment(raw_text):
@@ -72,6 +57,44 @@ def build_context_text(df, df_comments, category_name):
 
     return "".join(text_chunks)
 
+def get_time_filtered_data(df, mode, curr_update_dt, prev_update_dt, now_dt):
+    """
+    분석 모드(UoU/DoD)에 따라 데이터프레임을 current와 compare로 나누고,
+    UI 렌더링에 필요한 라벨 변수들 반환.
+    """
+    if "UoU" in mode:
+        curr_df = df[df['created_at_dt'] >= curr_update_dt]
+        comp_df = df[(df['created_at_dt'] >= prev_update_dt) & (df['created_at_dt'] < curr_update_dt)]
+
+        # 탭3을 위한 일평균 트래픽 계산용 일수
+        days_curr = max((now_dt - curr_update_dt).days, 1)
+        days_prev = max((curr_update_dt - prev_update_dt).days, 1)
+
+        return curr_df, comp_df, f"이번 업데이트 ({curr_update_dt.strftime('%m/%d')}~)", "이전 업데이트 대비", 'date', days_curr, days_prev
+
+    else: # DoD
+        curr_df = df[df['created_at_dt'] >= (now_dt - timedelta(hours=24))].copy()
+        comp_df = df[(df['created_at_dt'] >= (now_dt - timedelta(hours=48))) & (df['created_at_dt'] < (now_dt - timedelta(hours=24)))]
+        curr_df['hour'] = curr_df['created_at_dt'].dt.strftime('%m-%d %H:00')
+
+        return curr_df, comp_df, "최근 24시간", "전일 24h 대비", 'hour', 1, 1
+
+
+# DB에서 보고서 가져오는 함수
+@st.cache_data(ttl=3600)
+def get_latest_ai_summary():
+    try:
+        res = supabase.table("ai_summaries") \
+            .select("*") \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        print(f"AI Report fetch error: {e}")
+        return None
+
+
 # 업데이트 날짜 기준점 찾기 (공식 뉴스 기준)
 @st.cache_data(ttl=3600)
 def get_update_points():
@@ -95,31 +118,43 @@ def get_update_points():
 
     return _get_default_ts()
 
-# DB에서 보고서 가져오는 함수
-@st.cache_data(ttl=3600)
-def get_latest_ai_summary():
-    try:
-        res = supabase.table("ai_summaries") \
-            .select("*") \
-            .order("created_at", desc=True) \
-            .limit(1) \
-            .execute()
-        return res.data[0] if res.data else None
-    except Exception as e:
-        print(f"AI Report fetch error: {e}")
-        return None
+# 업데이트 시점을 가져오는 함수 먼저 호출
+curr_update_ts, prev_update_ts = get_update_points()
 
-# 중복 코드를 방지하기 위한 도우미 함수
-def _get_default_ts():
+# 로드 함수에 prev_update_ts를 넘겨줌
+@st.cache_data(ttl=3600)
+def load_dashboard_data(prev_ts):
     now_ts = int(datetime.now().timestamp())
-    prev_ts = now_ts - (86400 * 14)
-    return now_ts, prev_ts
+
+    # 조건 A: DoD 분석을 위한 절대 방어선 (최소 과거 48시간 보장)
+    dod_threshold = now_ts - (86400 * 2)
+
+    # 조건 B: UoU 분석 및 트렌드 차트용 방어선 
+    # (이전 업데이트 시점보다 3일 더 버퍼)
+    uou_threshold = prev_ts - (86400 * 3)
+
+    # 두 기준점 중 더 과거의 시간을 최종 커트라인으로
+    final_threshold = min(dod_threshold, uou_threshold)
+
+    # limit 없이 동적 시간 기준으로 데이터 로드
+    res = supabase.table("posts") \
+        .select("*") \
+        .gte("created_at", final_threshold) \
+        .execute()
+
+    df = pd.DataFrame(res.data)
+
+    if not df.empty:
+        df['created_at_dt'] = pd.to_datetime(df['created_at'], unit='s', utc=True).dt.tz_convert('Asia/Seoul')
+        df['date'] = df['created_at_dt'].dt.date
+
+    return df
+
 
 # ==========================================
 # 2-1. 변수 할당 및 후속 처리
 # ==========================================
-curr_update_ts, prev_update_ts = get_update_points()
-df_all = load_dashboard_data()
+df_all = load_dashboard_data(prev_update_ts)
 
 # ==========================================
 # 2-2. 데이터 로드 및 방어막
@@ -144,40 +179,32 @@ st.sidebar.markdown("---")
 df_out_pure = df_all[(df_all['plate_name'] == '전초기지') & (df_all['is_official'] == False)].copy()
 df_guide = df_all[(df_all['plate_name'] == '유저 공략')].copy()
 
+# --- 탭 공통 시간 변수 세팅 ---
+# df_all이 정상적으로 로드 됐다면 기준 시간들을 세팅
+now_dt = datetime.now(df_all['created_at_dt'].dt.tz)
+curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
+prev_update_dt = pd.to_datetime(prev_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
+
+# 탭 선언
 tab_outpost, tab_guide, tab_art = st.tabs(["🗣️ 전초기지 (여론)", "📚 유저 공략 (트렌드)", "🎨 니케 아트 (미디어)"])
 
 # --- TAB 1: 전초기지 (다이내믹 필터링 적용) ---
 with tab_outpost:
 
-    # 모드에 따른 동적 시간 필터링 계산
-    now_dt = datetime.now(df_out_pure['created_at_dt'].dt.tz)
+    # # 모드에 따른 동적 시간 필터링 계산
+    # now_dt = datetime.now(df_out_pure['created_at_dt'].dt.tz)
 
-    # 업데이트 기준일 (UTC -> KST 변환 보장)
-    curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
-    prev_update_dt = pd.to_datetime(prev_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
+    # # 업데이트 기준일 (UTC -> KST 변환 보장)
+    # curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
+    # prev_update_dt = pd.to_datetime(prev_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
 
-    if "UoU" in analysis_mode:
-        # UoU 모드: 이번 패치 이후 vs 지난 패치 기간
-        current_df = df_out_pure[df_out_pure['created_at_dt'] >= curr_update_dt]
-        compare_df = df_out_pure[(df_out_pure['created_at_dt'] >= prev_update_dt) & 
-                                 (df_out_pure['created_at_dt'] < curr_update_dt)]
-        time_label = f"이번 업데이트 ({curr_update_dt.strftime('%m/%d')}~)"
-        delta_label = "이전 업데이트 대비"
-        chart_group = 'date' # UoU는 '일별'로 그룹핑
-    else:
-        # DoD 모드: 최근 24시간 vs 직전 24시간
-        current_df = df_out_pure[df_out_pure['created_at_dt'] >= (now_dt - timedelta(hours=24))]
-        compare_df = df_out_pure[(df_out_pure['created_at_dt'] >= (now_dt - timedelta(hours=48))) & 
-                                 (df_out_pure['created_at_dt'] < (now_dt - timedelta(hours=24)))]
-        time_label = "최근 24시간"
-        delta_label = "전일 24h 대비"
-        # DoD는 차트를 '시간별'로
-        current_df['hour'] = current_df['created_at_dt'].dt.strftime('%Y-%m-%d %H:00') 
-        chart_group = 'hour'
+    current_df, compare_df, time_label, delta_label, chart_group, _, _ = get_time_filtered_data(
+        df_out_pure, analysis_mode, curr_update_dt, prev_update_dt, now_dt
+    )
 
     st.markdown(f"**기준:** {time_label} (분석 대상: {len(current_df):,}건)")
 
-    # 2. KPI 계산 도우미 함수
+    # KPI 계산 도우미 함수
     pos_words = ['갓겜', '혜자', '만족', '재밌', '좋아', '좋다', '대박', '최고', '기대', '기쁘다', '기뻤습니다', '기뻐요', '기쁩니다', '행복', '행복하다', '행복해']
     neg_words = ['망겜', '창렬', '불만', '싫어', '싫다', '노답', '삭제', '접음', '최악', '나쁘다', '나빴습니다', '나빠요', '나쁩니다', '슬픔', '슬프다', '슬퍼'
                 ,'문제']
@@ -290,18 +317,14 @@ with tab_outpost:
 # --- TAB 2: 유저 공략 ---
 with tab_guide:
 
-    # 1. 🕒 시간 필터링 데이터 준비
-    now_dt = datetime.now(df_guide['created_at_dt'].dt.tz)
-    curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
-    prev_update_dt = pd.to_datetime(prev_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
+    # # 1. 🕒 시간 필터링 데이터 준비
+    # now_dt = datetime.now(df_guide['created_at_dt'].dt.tz)
+    # curr_update_dt = pd.to_datetime(curr_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
+    # prev_update_dt = pd.to_datetime(prev_update_ts, unit='s', utc=True).tz_convert('Asia/Seoul')
 
-    # UoU 데이터 (이번 업데이트 vs 이전 업데이트)
-    uou_curr = df_guide[df_guide['created_at_dt'] >= curr_update_dt]
-    uou_prev = df_guide[(df_guide['created_at_dt'] >= prev_update_dt) & (df_guide['created_at_dt'] < curr_update_dt)]
-
-    # DoD 데이터 (최근 24시간 vs 직전 24시간)
-    dod_curr = df_guide[df_guide['created_at_dt'] >= (now_dt - timedelta(hours=24))].copy()
-    dod_prev = df_guide[(df_guide['created_at_dt'] >= (now_dt - timedelta(hours=48))) & (df_guide['created_at_dt'] < (now_dt - timedelta(hours=24)))]
+    guide_curr, guide_comp, time_label, delta_label, chart_group, _, _ = get_time_filtered_data(
+        df_guide, analysis_mode, curr_update_dt, prev_update_dt, now_dt
+    )
 
     # 2. 지표 계산 함수
     def get_eng_rate(df):
@@ -314,29 +337,27 @@ with tab_guide:
 
     with col1:
         st.subheader("💡 Engagement Rate", help="참여도 = (좋아요 수 + 댓글 수) / 조회수")
-        eng_curr = get_eng_rate(uou_curr)
-        eng_prev = get_eng_rate(uou_prev)
-        st.metric(label=f"이번 업데이트 참여도 ({curr_update_dt.strftime('%m/%d')}~)", 
+        eng_curr = get_eng_rate(guide_curr)
+        eng_prev = get_eng_rate(guide_comp)
+        # 라벨도 하드코딩하지 않고 동적 변수 사용
+        st.metric(label=f"참여도 ({time_label})", 
                   value=f"{eng_curr:.2f}%", 
-                  delta=f"{eng_curr - eng_prev:+.2f}%p (UoU)")
+                  delta=f"{eng_curr - eng_prev:+.2f}%p ({delta_label})")
 
-        # 참여도 일별 추이 (라인 그래프)
-        if not uou_curr.empty:
-            eng_trend = uou_curr.groupby('date').apply(get_eng_rate, include_groups=False)
+        if not guide_curr.empty:
+            eng_trend = guide_curr.groupby(chart_group).apply(get_eng_rate, include_groups=False)
             st.line_chart(eng_trend, height=200)
 
     with col2:
         st.subheader("📝 Traffic Shift")
-        traf_curr = len(dod_curr)
-        traf_prev = len(dod_prev)
-        st.metric(label="최근 24시간 신규 게시글", 
+        traf_curr = len(guide_curr)
+        traf_prev = len(guide_comp)
+        st.metric(label=f"신규 게시글 ({time_label})", 
                   value=f"{traf_curr} 건", 
-                  delta=f"{traf_curr - traf_prev:+} 건 (DoD)")
+                  delta=f"{traf_curr - traf_prev:+} 건 ({delta_label})")
 
-        # 트래픽 시간별 추이 (라인 그래프)
-        if not dod_curr.empty:
-            dod_curr['hour'] = dod_curr['created_at_dt'].dt.strftime('%m-%d %H:00')
-            traf_trend = dod_curr.groupby('hour').size()
+        if not guide_curr.empty:
+            traf_trend = guide_curr.groupby(chart_group).size()
             st.line_chart(traf_trend, height=200)
 
     st.divider()
@@ -345,10 +366,10 @@ with tab_guide:
     st.subheader("📊 Share of Voice (Top 5 키워드)")
     st.caption("최근 업데이트 이후 유저 공략 탭에서 가장 많이 언급된 단어입니다.")
 
-    if not uou_curr.empty:
+    if not guide_curr.empty:
         # 명사 위주의 정규식 카운팅
         stop_words = ['공략', '니케', '뉴비', '질문', '이거', '어떻게', '진짜', '너무']
-        all_text = " ".join(uou_curr['title'].astype(str).tolist())
+        all_text = " ".join(guide_curr['title'].astype(str).tolist())
         words = re.findall(r'[가-힣A-Za-z]{2,}', all_text) # 2글자 이상 한글/영문 추출
         filtered_words = [w for w in words if w not in stop_words]
 
@@ -366,8 +387,8 @@ with tab_guide:
 
     # 5. 하단 레이아웃: TOP 3 인기 공략 (클릭 가능한 링크 포함)
     st.subheader(f"👑 업데이트 이후 TOP 3 인기 공략")
-    if not uou_curr.empty:
-        top3_df = uou_curr.nlargest(3, 'browse_count')
+    if not guide_curr.empty:
+        top3_df = guide_curr.nlargest(3, 'browse_count')
         for idx, row in top3_df.iterrows():
             # 네이버 게임 라운지 표준 URL 형식 (게시판 고유 ID 적용)
             post_url = f"https://www.blablalink.com/post/detail?post_uuid={row['post_uuid']}"
@@ -387,28 +408,19 @@ with tab_art:
         df_art = df_all[df_all['plate_name'] == '니케 아트'].copy()
 
         if not df_art.empty:
-            now_dt = datetime.now(df_art['created_at_dt'].dt.tz)
+            current_art, compare_art, art_label, art_delta_label, art_group, days_curr, days_prev = get_time_filtered_data(
+                df_art, analysis_mode, curr_update_dt, prev_update_dt, now_dt
+            )
 
-            # 2. DoD / UoU 동적 필터링 로직 (기존 유지)
+            # 2. DoD / UoU 동적 필터링 로직
             if "UoU" in analysis_mode:
-                current_art = df_art[df_art['created_at_dt'] >= curr_update_dt].copy()
-                compare_art = df_art[(df_art['created_at_dt'] >= prev_update_dt) & (df_art['created_at_dt'] < curr_update_dt)]
-                days_curr = max((now_dt - curr_update_dt).days, 1)
-                days_prev = max((curr_update_dt - prev_update_dt).days, 1)
                 art_traf_curr = len(current_art) / days_curr
                 art_traf_prev = len(compare_art) / days_prev
-                art_label, art_delta_label = f"이번 업데이트", "이전 패치 일평균 대비"
                 traf_label, traf_unit = "일평균 신규 게시글", "건/일"
-                art_group = 'date'
             else:
-                current_art = df_art[df_art['created_at_dt'] >= (now_dt - timedelta(hours=24))].copy()
-                compare_art = df_art[(df_art['created_at_dt'] >= (now_dt - timedelta(hours=48))) & (df_art['created_at_dt'] < (now_dt - timedelta(hours=24)))]
                 art_traf_curr = len(current_art)
                 art_traf_prev = len(compare_art)
-                art_label, art_delta_label = "최근 24시간", "전일 24h 대비"
-                traf_label, traf_unit = "최근 24시간 신규 게시글", "건"
-                current_art['hour'] = current_art['created_at_dt'].dt.strftime('%m-%d %H:00')
-                art_group = 'hour'
+                traf_label, traf_unit = f"신규 게시글 ({art_label})", "건"
 
             def get_art_eng_rate(df):
                 if df.empty or df['browse_count'].sum() == 0: return 0.0
