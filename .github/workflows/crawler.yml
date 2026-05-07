@@ -3,8 +3,7 @@ name: Daily Nikke Crawler
 on:
   # 1. 스케줄링 설정 (UTC 기준)
   schedule:
-    # 매일 한국 시간 자정(00:00)에 실행 = UTC 시간으로는 전날 15:00
-    - cron: '0 15 * * *'
+    - cron: '17 17 * * *'
   
   # 2. 수동 실행 버튼 (원할 때 언제든 깃허브 화면에서 클릭으로 실행 가능)
   workflow_dispatch:

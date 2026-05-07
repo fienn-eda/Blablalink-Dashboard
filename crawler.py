@@ -421,8 +421,8 @@ def generate_and_save_ai_report():
         - **미래 전략**: 향후 운영 전략 제시.
         """
         
-        max_retries = 100
-        retry_delay = 30
+        max_retries = 5
+        retry_delay = 60
 
         for attempt in range(max_retries):
             try:
